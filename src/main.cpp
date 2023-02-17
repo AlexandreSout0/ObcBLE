@@ -34,6 +34,30 @@
 
 volatile int pulse_count = 0;
 
+
+String checksum(String data);
+String char_to_hex(char x);
+unsigned int readRPM(gpio_num_t rpm);
+unsigned int readPulse(gpio_num_t pulse);
+static void IRAM_ATTR pulse_isr_handler(void* arg);
+bool analogDigital(gpio_num_t ed);
+void inicioBLE();
+void uart_init(int baudRate, int tx_io_num, int rx_io_num, uart_port_t uart_num);
+void send_data_over_ble(String package);
+
+
+xQueueHandle QueuePackages;
+
+struct obc_frame 
+{
+  unsigned int rpm ;
+  unsigned int digital1;
+  unsigned int digital2;
+  unsigned int digital3;
+  unsigned int digital4;
+  unsigned int pulse1;
+}frame = {1,0,0,0,0,0};
+
 BLEServer *server = nullptr; //Ponteiro para uma variável tipo BLEserver
 BLECharacteristic *pacote = nullptr; //Ponteiro para caracteristicas do serviço do periferico
 BLECharacteristic *pacote_rx = nullptr; //Ponteiro para caracteristicas do serviço do periferico
@@ -101,7 +125,6 @@ class CharacteristicCallbacks: public BLECharacteristicCallbacks
 
 };
 
-
 class ServerCallbacks: public BLEServerCallbacks // Classe para herdar os serviços de callback BLE
 {
   void onConnect(BLEServer *s)
@@ -150,6 +173,7 @@ bool analogDigital(gpio_num_t ed)
     return edState;
 }
 
+
 static void IRAM_ATTR pulse_isr_handler(void* arg)
 {
     pulse_count++;
@@ -179,20 +203,42 @@ unsigned int readRPM(gpio_num_t rpm)
     gpio_pullup_dis(rpm);
 
     uint32_t start = xthal_get_ccount();
-    // Espera até que o sinal mude para alto
-    while (gpio_get_level(rpm) == 0) {}
-    // Conta o tempo até que o sinal mude para baixo novamente
-    while (gpio_get_level(GPIO_NUM_0) == 1) {}
+    while (gpio_get_level(rpm) == 0) {}    // Espera até que o sinal mude para alto
+    while (gpio_get_level(GPIO_NUM_0) == 1) {} // Conta o tempo até que o sinal mude para baixo novamente
     uint32_t end = xthal_get_ccount();
-    // Calcula a frequência do sinal como 1 / duração
-    float duration = (end - start) / (float)configTICK_RATE_HZ;
+    float duration = (end - start) / (float)configTICK_RATE_HZ; // Calcula a frequência do sinal como 1 / duração
     float frequency = 1.0 / duration;
     int freq = static_cast<int>(frequency); // cast de float para int
 
     return freq;
 }
 
+String char_to_hex(char x){
+    char hex[3];
+    sprintf(hex,"%02X",x);
+    hex[2] = '\0';
+    return (String)hex;
+}
 
+String checksum(String data){
+    String result;
+    char csum = data[0] ^ data[1];
+    for (int i = 2; i != data.length(); i++){
+        csum = csum ^ data[i];
+    }
+    result = data +  "," + char_to_hex(csum);
+    return result;
+}
+
+void readSignals(void * params)
+{
+  while(true)
+  {
+
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
+
+}
 
 
 void setup() 
@@ -200,11 +246,15 @@ void setup()
   inicioBLE();
   uart_init(BAUD_RATE, TX, RX, UART);
   uart_write_bytes(UART, (const char *) "Solinftec - OBC \n", strlen("Solinftec - OBC \n"));
+  xTaskCreate(&readSignals, "estado da porta", 2048, NULL, 1, NULL);
 }
-
 
 __attribute__((unused)) void loop()
 {
     vTaskDelay(100 / portTICK_PERIOD_MS);
     esp_task_wdt_reset();
 }
+
+
+
+
