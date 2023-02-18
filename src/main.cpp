@@ -13,6 +13,7 @@
 #include "driver/gpio.h"
 #include "sdkconfig.h"
 #include "esp_task_wdt.h"
+#include "freertos/event_groups.h"
 
 #define SERVICE_UUID "0716bf69-27fa-44bd-b636-4ab49725c6b0"
 #define PACOTE_UUID  "0716bf69-27fa-44bd-b636-4ab49725c6b1"
@@ -34,7 +35,6 @@
 
 volatile int pulse_count = 0;
 
-
 String checksum(String data);
 String char_to_hex(char x);
 unsigned int readRPM(gpio_num_t rpm);
@@ -47,6 +47,11 @@ void send_data_over_ble(String package);
 
 
 xQueueHandle QueuePackages;
+EventGroupHandle_t readsEvt;
+
+const int eds = BIT0; //eb01
+const int pulseRpm = BIT1; //Eb10
+
 
 struct obc_frame 
 {
@@ -56,7 +61,7 @@ struct obc_frame
   unsigned int digital3;
   unsigned int digital4;
   unsigned int pulse1;
-}frame = {1,0,0,0,0,0};
+}frame = {0,0,0,0,0,0};
 
 BLEServer *server = nullptr; //Ponteiro para uma variável tipo BLEserver
 BLECharacteristic *pacote = nullptr; //Ponteiro para caracteristicas do serviço do periferico
@@ -73,7 +78,7 @@ void send_data_over_ble(String package)
 
     //std::string data(buff.c_str(), buff.length());
     pacote -> setValue(package.c_str());
-    pacote -> notify();
+    pacote -> notify(true);
 }
 
 void uart_init(int baudRate, int tx_io_num, int rx_io_num, uart_port_t uart_num)
@@ -84,7 +89,7 @@ void uart_init(int baudRate, int tx_io_num, int rx_io_num, uart_port_t uart_num)
 
     uart_config_t uart_config = 
     {
-      .baud_rate = baudRate,
+      .baud_rate = BAUD_RATE,
       .data_bits = UART_DATA_8_BITS,
       .parity    = UART_PARITY_DISABLE,
       .stop_bits = UART_STOP_BITS_1,
@@ -150,8 +155,10 @@ void inicioBLE()
   server -> setCallbacks(new ServerCallbacks()); // cria uma instancia do serviço de callback
   // Serviços do Periferico BLE
   service = server -> createService(SERVICE_UUID); //crio um serviço com o UUID e guardo seu endereço no ponteiro
-  pacote = service -> createCharacteristic(PACOTE_UUID,BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);   // Habilita a assinatura do serviço para receber alteraçoes de pacote
-  pacote_rx = service -> createCharacteristic(RX_UUID, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_READ);  // Create a BLE Characteristic para recebimento de dados
+  pacote = service -> createCharacteristic( PACOTE_UUID, BLECharacteristic::PROPERTY_READ |BLECharacteristic::PROPERTY_NOTIFY); // Habilita a assinatura do serviço para receber alteraçoes de pacote //Configurar Características
+  pacote_rx = service -> createCharacteristic( RX_UUID, BLECharacteristic::PROPERTY_WRITE ); // Create a BLE Characteristic para recebimento de dados
+  pacote->addDescriptor(new BLE2902());
+
   pacote_rx -> setCallbacks(new CharacteristicCallbacks());
   service -> start(); // inicia o serviço
   // Criação do Advertising para poder ser descoberto
@@ -181,6 +188,7 @@ static void IRAM_ATTR pulse_isr_handler(void* arg)
 
 unsigned int readPulse(gpio_num_t pulse)
 {
+    int current_pulse_count;
 
     gpio_set_direction(pulse, GPIO_MODE_INPUT);
     gpio_set_intr_type(pulse, GPIO_INTR_POSEDGE);
@@ -190,7 +198,7 @@ unsigned int readPulse(gpio_num_t pulse)
     gpio_install_isr_service(0);
     gpio_isr_handler_add(pulse , pulse_isr_handler, (void*) pulse);
 
-    int current_pulse_count = pulse_count;
+    current_pulse_count = pulse_count;
 
     return current_pulse_count;
 }
@@ -203,9 +211,11 @@ unsigned int readRPM(gpio_num_t rpm)
     gpio_pullup_dis(rpm);
 
     uint32_t start = xthal_get_ccount();
-    while (gpio_get_level(rpm) == 0) {}    // Espera até que o sinal mude para alto
-    while (gpio_get_level(GPIO_NUM_0) == 1) {} // Conta o tempo até que o sinal mude para baixo novamente
     uint32_t end = xthal_get_ccount();
+
+    while (gpio_get_level(rpm) == 0) {}    // Espera até que o sinal mude para alto
+    while (gpio_get_level(rpm) == 1) {} // Conta o tempo até que o sinal mude para baixo novamente
+    
     float duration = (end - start) / (float)configTICK_RATE_HZ; // Calcula a frequência do sinal como 1 / duração
     float frequency = 1.0 / duration;
     int freq = static_cast<int>(frequency); // cast de float para int
@@ -230,10 +240,75 @@ String checksum(String data){
     return result;
 }
 
-void readSignals(void * params)
+
+void Task_readDigitals(void * params)
 {
   while(true)
   {
+    frame.digital1 = analogDigital(ED1);
+    frame.digital2 = analogDigital(ED2);
+    frame.digital3 = analogDigital(ED3);
+    frame.digital4 = analogDigital(ED4);
+    xEventGroupSetBits(readsEvt, eds);
+
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
+
+}
+
+void Task_rpmAndPulse(void * params)
+{
+  while(true)
+  {
+    //frame.rpm = readRPM(RPM);
+    frame.pulse1 = readPulse(PULSE);
+    xEventGroupSetBits(readsEvt, pulseRpm);
+    vTaskDelay(10000 / portTICK_PERIOD_MS);
+  }
+
+}
+
+void Task_mountPackage (void * params)
+{
+
+  while(true)
+  {
+    
+    xEventGroupWaitBits(readsEvt, eds | pulseRpm , true , true, portMAX_DELAY);
+    String package = "";
+    package = "$ALX,";
+    package = (package + frame.rpm + "," + frame.digital1 + "," + frame.digital2 + "," + frame.digital3 + "," + frame.digital4 + "," + frame.pulse1);
+    package = checksum(package);
+    package = package + "\n\r";
+    long resposta_queue = xQueueSend(QueuePackages, &package, 1000 / portTICK_PERIOD_MS);
+    
+    if(resposta_queue == true)
+    {
+      uart_write_bytes(UART, (const char *) package.c_str(), strlen(package.c_str()));
+    }
+    else
+    {
+      uart_write_bytes(UART, (const char *) "Queue Failed\n", strlen("Queue Failed\n"));
+    }
+
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
+
+}
+
+
+void Task_sendBLE (void * params)
+{
+  String package;
+  
+  while(true)
+  {
+    
+    if(xQueueReceive(QueuePackages, &package, 5000 / portTICK_PERIOD_MS))
+    {
+      pacote -> setValue(package.c_str());
+      pacote -> notify(true); //notifica que houve alterações no pacote 
+    }
 
     vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
@@ -246,7 +321,14 @@ void setup()
   inicioBLE();
   uart_init(BAUD_RATE, TX, RX, UART);
   uart_write_bytes(UART, (const char *) "Solinftec - OBC \n", strlen("Solinftec - OBC \n"));
-  xTaskCreate(&readSignals, "estado da porta", 2048, NULL, 1, NULL);
+
+  readsEvt = xEventGroupCreate();
+  QueuePackages = xQueueCreate(4,sizeof(float));
+
+  xTaskCreate(&Task_readDigitals, "Get Digital States", 2048, NULL, 1, NULL);
+  xTaskCreate(&Task_rpmAndPulse, "Get Pulse and RPM", 2048, NULL, 1, NULL);
+  xTaskCreate(&Task_mountPackage, "Mount Frame Package", 2048,NULL,1,NULL);
+  xTaskCreate(&Task_sendBLE, "Send Package from Bluetooth", 2048,NULL,1,NULL);
 }
 
 __attribute__((unused)) void loop()
