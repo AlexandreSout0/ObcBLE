@@ -124,7 +124,7 @@ class CharacteristicCallbacks: public BLECharacteristicCallbacks
 
       if(buffer == "$POK!")
       {
-         uart_write_bytes(UART, (const char *) "HandShake", strlen("HandShake"));
+         uart_write_bytes(UART, (const char *) "Handshake", strlen("Handshake"));
       }
   }
 
@@ -155,9 +155,9 @@ void inicioBLE()
   server -> setCallbacks(new ServerCallbacks()); // cria uma instancia do serviço de callback
   // Serviços do Periferico BLE
   service = server -> createService(SERVICE_UUID); //crio um serviço com o UUID e guardo seu endereço no ponteiro
-  pacote = service -> createCharacteristic( PACOTE_UUID, BLECharacteristic::PROPERTY_READ |BLECharacteristic::PROPERTY_NOTIFY); // Habilita a assinatura do serviço para receber alteraçoes de pacote //Configurar Características
+  pacote = service -> createCharacteristic( PACOTE_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY); // Habilita a assinatura do serviço para receber alteraçoes de pacote //Configurar Características
   pacote_rx = service -> createCharacteristic( RX_UUID, BLECharacteristic::PROPERTY_WRITE ); // Create a BLE Characteristic para recebimento de dados
-  pacote->addDescriptor(new BLE2902());
+  pacote -> addDescriptor(new BLE2902());
 
   pacote_rx -> setCallbacks(new CharacteristicCallbacks());
   service -> start(); // inicia o serviço
