@@ -34,12 +34,15 @@
 #define PULSE GPIO_NUM_35
 
 volatile int pulse_count = 0;
+volatile int freq = 0;
+
 
 String checksum(String data);
 String char_to_hex(char x);
 unsigned int readRPM(gpio_num_t rpm);
 unsigned int readPulse(gpio_num_t pulse);
 static void IRAM_ATTR pulse_isr_handler(void* arg);
+static void IRAM_ATTR pulse_isr_handler2(void* arg);
 bool analogDigital(gpio_num_t ed);
 void inicioBLE();
 void uart_init(int baudRate, int tx_io_num, int rx_io_num, uart_port_t uart_num);
@@ -49,9 +52,11 @@ void send_data_over_ble(String package);
 xQueueHandle QueuePackages;
 EventGroupHandle_t readsEvt;
 
+
 const int eds = BIT0; //eb01
 const int pulseRpm = BIT1; //Eb10
 
+char handShake = 'f';
 
 struct obc_frame 
 {
@@ -117,14 +122,18 @@ class CharacteristicCallbacks: public BLECharacteristicCallbacks
       std::string rxValueCheck = "!";
       rxValueCheck.c_str();
 
-      if (rxValue == rxValueCheck)
+      if (strlen(buffer.c_str()) >= 12)
       {
         uart_write_bytes(UART, (const char *) buffer.c_str(), strlen(buffer.c_str()));
+        uart_write_bytes(UART, (const char *) "\n", strlen("\n"));
+        buffer = "";
+        rxValue = "";
       }
 
       if(buffer == "$POK!")
       {
-         uart_write_bytes(UART, (const char *) "Handshake", strlen("Handshake"));
+         uart_write_bytes(UART, (const char *) "Handshake \n", strlen("Handshake \n"));
+         handShake = 't';
       }
   }
 
@@ -134,13 +143,14 @@ class ServerCallbacks: public BLEServerCallbacks // Classe para herdar os servi�
 {
   void onConnect(BLEServer *s)
   {
-    BLEDevice::startAdvertising(); // Mesmo que esteja alguém conectado o Advertinsing é chamado novamente e permite conecções com outros dispositivos simultaneos
+    //BLEDevice::startAdvertising(); // Mesmo que esteja alguém conectado o Advertinsing é chamado novamente e permite conecções com outros dispositivos simultaneos
     uart_write_bytes(UART, (const char *) "Device Connected\n", strlen("Device Connected\n"));
   }
 
   void onDisconnect(BLEServer *s)
   {
     uart_write_bytes(UART, (const char *) "Device Disconnected\n", strlen("Device Disconnected\n"));
+    handShake = 'f';
     service -> stop();
   }
 };
@@ -156,7 +166,7 @@ void inicioBLE()
   // Serviços do Periferico BLE
   service = server -> createService(SERVICE_UUID); //crio um serviço com o UUID e guardo seu endereço no ponteiro
   pacote = service -> createCharacteristic( PACOTE_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY); // Habilita a assinatura do serviço para receber alteraçoes de pacote //Configurar Características
-  pacote_rx = service -> createCharacteristic( RX_UUID, BLECharacteristic::PROPERTY_WRITE ); // Create a BLE Characteristic para recebimento de dados
+  pacote_rx = service -> createCharacteristic( RX_UUID, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_READ ); // Create a BLE Characteristic para recebimento de dados
   pacote -> addDescriptor(new BLE2902());
 
   pacote_rx -> setCallbacks(new CharacteristicCallbacks());
@@ -175,8 +185,8 @@ bool analogDigital(gpio_num_t ed)
     
     bool edState;
     gpio_pad_select_gpio(ed); //Configuração do pino
-    gpio_set_direction(ed, GPIO_MODE_OUTPUT); //Direção do pino
-    edState = gpio_get_level(ed);
+    gpio_set_direction(ed, GPIO_MODE_INPUT); //Direção do pino
+    edState = !gpio_get_level(ed); //Inverte o sinal da leitura
     return edState;
 }
 
@@ -185,6 +195,12 @@ static void IRAM_ATTR pulse_isr_handler(void* arg)
 {
     pulse_count++;
 }
+
+static void IRAM_ATTR pulse_isr_handler2(void* arg)
+{
+    freq++;
+}
+
 
 unsigned int readPulse(gpio_num_t pulse)
 {
@@ -195,32 +211,30 @@ unsigned int readPulse(gpio_num_t pulse)
     gpio_pulldown_dis(pulse);
     gpio_pullup_dis(pulse);
 
-    gpio_install_isr_service(0);
     gpio_isr_handler_add(pulse , pulse_isr_handler, (void*) pulse);
 
     current_pulse_count = pulse_count;
+    pulse_count = 0;
 
     return current_pulse_count;
 }
 
 unsigned int readRPM(gpio_num_t rpm)
 {
+  int readRpm;
 
     gpio_set_direction(rpm, GPIO_MODE_INPUT);
+    gpio_set_intr_type(rpm, GPIO_INTR_POSEDGE);
     gpio_pulldown_dis(rpm);
     gpio_pullup_dis(rpm);
 
-    uint32_t start = xthal_get_ccount();
-    uint32_t end = xthal_get_ccount();
+    gpio_isr_handler_add(rpm , pulse_isr_handler2, (void*) rpm);
 
-    while (gpio_get_level(rpm) == 0) {}    // Espera até que o sinal mude para alto
-    while (gpio_get_level(rpm) == 1) {} // Conta o tempo até que o sinal mude para baixo novamente
-    
-    float duration = (end - start) / (float)configTICK_RATE_HZ; // Calcula a frequência do sinal como 1 / duração
-    float frequency = 1.0 / duration;
-    int freq = static_cast<int>(frequency); // cast de float para int
+    readRpm = freq;
+    freq = 0;
 
-    return freq;
+    return readRpm;
+
 }
 
 String char_to_hex(char x){
@@ -260,10 +274,10 @@ void Task_rpmAndPulse(void * params)
 {
   while(true)
   {
-    //frame.rpm = readRPM(RPM);
+    frame.rpm = readRPM(RPM);
     frame.pulse1 = readPulse(PULSE);
     xEventGroupSetBits(readsEvt, pulseRpm);
-    vTaskDelay(10000 / portTICK_PERIOD_MS);
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
 
 }
@@ -299,12 +313,12 @@ void Task_mountPackage (void * params)
 
 void Task_sendBLE (void * params)
 {
-  String package;
+  std::string package;
   
   while(true)
   {
     
-    if(xQueueReceive(QueuePackages, &package, 5000 / portTICK_PERIOD_MS))
+    if(xQueueReceive(QueuePackages, &package, 1000 / portTICK_PERIOD_MS) && handShake == 't')
     {
       pacote -> setValue(package.c_str());
       pacote -> notify(true); //notifica que houve alterações no pacote 
@@ -320,6 +334,7 @@ void setup()
 {
   inicioBLE();
   uart_init(BAUD_RATE, TX, RX, UART);
+  gpio_install_isr_service(0);
   uart_write_bytes(UART, (const char *) "Solinftec - OBC \n", strlen("Solinftec - OBC \n"));
 
   readsEvt = xEventGroupCreate();
@@ -328,7 +343,7 @@ void setup()
   xTaskCreate(&Task_readDigitals, "Get Digital States", 2048, NULL, 1, NULL);
   xTaskCreate(&Task_rpmAndPulse, "Get Pulse and RPM", 2048, NULL, 1, NULL);
   xTaskCreate(&Task_mountPackage, "Mount Frame Package", 2048,NULL,1,NULL);
-  xTaskCreate(&Task_sendBLE, "Send Package from Bluetooth", 2048,NULL,1,NULL);
+  xTaskCreate(&Task_sendBLE, "Send Package from Bluetooth", 2048,NULL,2,NULL);
 }
 
 __attribute__((unused)) void loop()
