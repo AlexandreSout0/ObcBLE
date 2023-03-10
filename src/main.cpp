@@ -250,7 +250,7 @@ String checksum(String data){
     for (int i = 2; i != data.length(); i++){
         csum = csum ^ data[i];
     }
-    result = data +  "," + char_to_hex(csum);
+    result = data  + char_to_hex(csum);
     return result;
 }
 
@@ -291,7 +291,7 @@ void Task_mountPackage (void * params)
     xEventGroupWaitBits(readsEvt, eds | pulseRpm , true , true, portMAX_DELAY);
     String package = "";
     package = "$ALX,";
-    package = (package + frame.rpm + "," + frame.digital1 + "," + frame.digital2 + "," + frame.digital3 + "," + frame.digital4 + "," + frame.pulse1);
+    package = (package + frame.rpm + "," + frame.digital1 + "," + frame.digital2 + "," + frame.digital3 + "," + frame.digital4 + "," + frame.pulse1 + ",");
     package = checksum(package);
     package = package + "\n\r";
     long resposta_queue = xQueueSend(QueuePackages, &package, 1000 / portTICK_PERIOD_MS);
