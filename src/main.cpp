@@ -143,7 +143,7 @@ class ServerCallbacks: public BLEServerCallbacks // Classe para herdar os servi�
 {
   void onConnect(BLEServer *s)
   {
-    //BLEDevice::startAdvertising(); // Mesmo que esteja alguém conectado o Advertinsing é chamado novamente e permite conecções com outros dispositivos simultaneos
+    BLEDevice::startAdvertising(); // Mesmo que esteja alguém conectado o Advertinsing é chamado novamente e permite conecções com outros dispositivos simultaneos
     uart_write_bytes(UART, (const char *) "Device Connected\n", strlen("Device Connected\n"));
   }
 
